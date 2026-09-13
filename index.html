@@ -132,6 +132,27 @@ input{font-family:inherit;}
   display:flex;flex-direction:column;align-items:center;
   padding:0 22px calc(var(--safe-b) + 22px);
 }
+.resume-card{
+  display:none;align-items:center;gap:10px;width:100%;max-width:360px;
+  background:var(--accent-soft);border:1.5px solid var(--accent);
+  border-radius:var(--radius);padding:12px 12px 12px 16px;margin-bottom:16px;
+  animation:softUp .4s ease forwards;
+}
+.resume-card.show{display:flex;}
+.resume-main{flex:1;min-width:0;}
+.resume-label{font-size:11px;font-weight:800;color:var(--accent);letter-spacing:.06em;text-transform:uppercase;}
+.resume-info{font-size:16px;font-weight:800;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.resume-sub{font-size:12px;color:var(--text-dim);font-weight:600;margin-top:1px;}
+.resume-go{
+  height:40px;padding:0 16px;border-radius:999px;background:var(--accent);color:#fff;
+  font-size:14px;font-weight:800;flex-shrink:0;
+}
+.resume-go:active{transform:scale(.94);}
+.resume-x{
+  width:30px;height:30px;border-radius:50%;background:rgba(0,0,0,.06);
+  color:var(--text-dim);font-size:13px;font-weight:800;flex-shrink:0;
+  display:flex;align-items:center;justify-content:center;
+}
 .home-stats{display:flex;gap:26px;margin-bottom:20px;opacity:0;}
 #screen-home.run .home-stats{animation:softUp .5s ease 2.5s forwards;}
 .home-stat{text-align:center;}
@@ -465,6 +486,15 @@ table.hist-table tr.total-row td{background:var(--surface);font-weight:800;borde
       </svg>
     </div>
     <div class="home-body">
+      <div class="resume-card" id="resumeCard">
+        <div class="resume-main" onclick="resumeRound()">
+          <div class="resume-label">Round in progress</div>
+          <div class="resume-info" id="resumeInfo">Hole 1</div>
+          <div class="resume-sub" id="resumeSub"></div>
+        </div>
+        <button class="resume-go" onclick="resumeRound()">Resume</button>
+        <button class="resume-x" onclick="discardActive()">&#10005;</button>
+      </div>
       <div class="home-stats" id="homeStats"></div>
       <div class="home-actions">
         <button class="pill-btn" id="btnStart" onclick="Setup.beginNewRound()"><span>Start round</span></button>
@@ -682,12 +712,36 @@ table.hist-table tr.total-row td{background:var(--surface);font-weight:800;borde
 
 /* ============ storage ============ */
 const STORAGE_KEY='scode_score_rounds_v1';
+const ACTIVE_KEY='scode_score_active_v1';
 function loadHistory(){
   try{ return JSON.parse(localStorage.getItem(STORAGE_KEY))||[]; }catch(e){ return []; }
 }
 function saveHistory(list){
   try{ localStorage.setItem(STORAGE_KEY,JSON.stringify(list)); return true; }
   catch(e){ toast('Storage full — remove an old round'); return false; }
+}
+
+/* the in-progress round is written to the device after every single change,
+   so a reload, a crash, or a dead battery never costs more than nothing */
+function saveActive(phase){
+  if(!Game.id) return;
+  const d=Game.record();
+  d.phase=phase;
+  d.currentHole=Game.currentHole;
+  d.workingPar=Play.workingPar;
+  d.savedAt=new Date().toISOString();
+  try{ localStorage.setItem(ACTIVE_KEY,JSON.stringify(d)); }
+  catch(e){ toast('Could not save progress — storage full'); }
+}
+function loadActive(){
+  try{
+    const d=JSON.parse(localStorage.getItem(ACTIVE_KEY));
+    if(!d||!d.players||!d.scores||!d.numHoles) return null;
+    return d;
+  }catch(e){ return null; }
+}
+function clearActive(){
+  try{ localStorage.removeItem(ACTIVE_KEY); }catch(e){}
 }
 
 /* ============ helpers ============ */
@@ -775,11 +829,67 @@ function renderHomeStats(){
     '<div class="home-stat"><div class="v num">'+fmtDate(hist[0].date).replace(/,.*$/,'')+'</div><div class="k">Last played</div></div>';
 }
 
+/* ============ resume an interrupted round ============ */
+function renderResume(){
+  const d=loadActive();
+  const card=document.getElementById('resumeCard');
+  if(!d){ card.classList.remove('show'); return; }
+  const hole=Math.min((d.currentHole||0)+1,d.numHoles);
+  document.getElementById('resumeInfo').textContent =
+    (d.phase==='final'||d.phase==='finalwash') ? 'Round finished — not saved yet' : 'Hole '+hole+' of '+d.numHoles;
+  document.getElementById('resumeSub').textContent =
+    d.players.map(p=>p.name).join(', ');
+  card.classList.add('show');
+}
+function resumeRound(){
+  const d=loadActive();
+  if(!d){ renderResume(); return; }
+  Game.players=d.players;
+  Game.numHoles=d.numHoles;
+  Game.holes=d.holes;
+  Game.scores=d.scores;
+  Game.currentHole=d.currentHole||0;
+  Game.id=d.id; Game.date=d.date; Game.saved=false;
+  Play.workingPar=d.workingPar||(d.holes[Game.currentHole]||{}).par||3;
+  Nav.stack=[];
+
+  if(d.phase==='final'){
+    renderFinalResults();
+    Nav.go('final','fade');
+  }else if(d.phase==='finalwash'){
+    const rows=computeStandings(Game.numHoles);
+    const win=rows[0];
+    const tied=rows.filter(r=>r.rank===1).length>1;
+    document.getElementById('fwTitle').textContent=tied?'It\u2019s a tie':win.name+' wins';
+    document.getElementById('fwSub').textContent=fmtScore(win.diff)+' \u00b7 '+win.total+' strokes over '+Game.numHoles+' holes';
+    document.getElementById('finalBloom').style.background='#23252a';
+    Nav.go('finalwash','fade');
+    restart(document.getElementById('screen-finalwash'));
+  }else if(d.phase==='par'){
+    document.getElementById('parHoleLabel').textContent='Hole '+(Game.currentHole+1);
+    document.getElementById('parNumber').textContent=Play.workingPar;
+    Play.updateParButtons();
+    Nav.go('par','fade');
+  }else{
+    renderScoreScreen();
+    Nav.go('score','fade');
+  }
+  toast('Picked up where you left off');
+}
+function discardActive(){
+  if(!confirm('Discard the round in progress? Its scores will be lost.')) return;
+  clearActive();
+  renderResume();
+}
+
 /* ============ setup ============ */
 const Setup={
   numPlayers:1, players:[], currentIndex:0, editingIndex:-1, numHoles:18, pendingPhoto:null,
 
   beginNewRound(){
+    if(loadActive() && !confirm('You have a round in progress. Starting a new one will discard it. Continue?')) return;
+    clearActive();
+    renderResume();
     this.numPlayers=1; this.players=[]; this.currentIndex=0; this.editingIndex=-1; this.numHoles=18;
     const slider=document.getElementById('countSlider');
     slider.value=1; updateCountDisplay(1);
@@ -966,6 +1076,7 @@ const Game={
 
   reveal(){
     renderFinalResults();
+    saveActive('final');
     Nav.stack=[];
     Nav.go('final','fade');
   },
@@ -977,6 +1088,8 @@ const Game={
       saveHistory(hist);
       this.saved=true;
     }
+    clearActive();
+    renderResume();
     toast('Round saved to this device');
     renderHomeStats();
     Nav.reset('home');
@@ -990,6 +1103,7 @@ const Play={
   enterHole(i){
     Game.currentHole=i;
     this.workingPar=Game.holes[i].par||3;
+    saveActive('par');
     Wash.show('Hole',i+1,i===Game.numHoles-1?'Last hole':(i===0?'Tee off':''),i,()=>{
       document.getElementById('parHoleLabel').textContent='Hole '+(i+1);
       document.getElementById('parNumber').textContent=this.workingPar;
@@ -1012,6 +1126,7 @@ const Play={
 
   confirmPar(){
     Game.holes[Game.currentHole].par=this.workingPar;
+    saveActive('score');
     Nav.goTo('score');
     renderScoreScreen();
   },
@@ -1021,6 +1136,7 @@ const Play={
     let cur=Game.scores[Game.currentHole][i];
     cur = (cur===null) ? par : cur+delta;
     Game.scores[Game.currentHole][i]=clamp(cur,1,20);
+    saveActive('score');
     buzz(5);
     renderScoreScreen();
   },
@@ -1038,6 +1154,7 @@ const Play={
       document.getElementById('fwTitle').textContent = tied ? 'It\u2019s a tie' : win.name+' wins';
       document.getElementById('fwSub').textContent = fmtScore(win.diff)+' \u00b7 '+win.total+' strokes over '+Game.numHoles+' holes';
       document.getElementById('finalBloom').style.background='#23252a';
+      saveActive('finalwash');
       Nav.stack=[];
       Nav.go('finalwash','fade');
       restart(document.getElementById('screen-finalwash'));
@@ -1415,7 +1532,26 @@ const home=document.getElementById('screen-home');
 home.classList.add('active');
 Nav.current='home';
 renderHomeStats();
+renderResume();
 restart(home);
+
+/* extra insurance: also write on background/close, in case a tap landed
+   at the exact moment iOS suspended the tab */
+document.addEventListener('visibilitychange',function(){
+  if(document.visibilityState==='hidden'&&Game.id&&!Game.saved){
+    saveActive(Nav.current==='par'?'par':Nav.current==='final'?'final':Nav.current==='finalwash'?'finalwash':'score');
+  }
+});
+window.addEventListener('pagehide',function(){
+  if(Game.id&&!Game.saved) saveActive(Nav.current==='par'?'par':'score');
+});
+
+/* makes the app itself load with no signal, if sw.js sits beside this file */
+if('serviceWorker' in navigator && location.protocol.indexOf('http')===0){
+  window.addEventListener('load',function(){
+    navigator.serviceWorker.register('sw.js').catch(function(){});
+  });
+}
 </script>
 </body>
 </html>
