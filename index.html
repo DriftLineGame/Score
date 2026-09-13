@@ -432,7 +432,17 @@ table.hist-table th{color:var(--text-faint);font-weight:700;position:sticky;top:
 table.hist-table td.rowlabel,table.hist-table th.rowlabel{position:sticky;left:0;background:var(--surface);text-align:left;font-weight:700;color:var(--text-dim);z-index:1;}
 table.hist-table th.rowlabel{z-index:3;}
 table.hist-table td.under{color:var(--accent);font-weight:800;}
+table.hist-table td.over{color:var(--ink);}
+table.hist-table th.rowlabel,table.hist-table td.rowlabel{width:58px;}
+table.hist-table th.parcol,table.hist-table td.parcol{
+  width:54px;background:var(--surface);color:var(--text-dim);font-weight:700;
+}
+table.hist-table th.parcol{color:var(--text-faint);}
 table.hist-table tr.total-row td{background:var(--surface);font-weight:800;border-bottom:none;}
+table.hist-table tr.total-row td.rowlabel{color:var(--text);}
+table.hist-table tr.vspar-row td{
+  background:var(--surface);font-weight:800;border-bottom:none;border-top:1px solid var(--line);
+}
 
 /* ============ previous rounds ============ */
 .prev-list{flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:10px;}
@@ -1357,27 +1367,47 @@ function renderFinalResults(){
 }
 
 function renderHistoryTable(container,players,holes,scores,numHoles){
-  let h='<table class="hist-table"><thead><tr><th class="rowlabel">Hole</th>';
+  /* Par is a property of the hole, so it gets its own column beside the
+     hole number — one row per hole, one column per player. */
+  let h='<table class="hist-table"><thead><tr>'+
+        '<th class="rowlabel">Hole</th><th class="parcol">Par</th>';
   players.forEach(p=>{ h+='<th>'+esc(p.name)+'</th>'; });
-  h+='</tr><tr><th class="rowlabel">Par</th>';
-  holes.forEach(x=>{ h+='<th>'+x.par+'</th>'; });
   h+='</tr></thead><tbody>';
+
+  let parTotal=0;
   for(let i=0;i<numHoles;i++){
-    h+='<tr><td class="rowlabel">'+(i+1)+'</td>';
+    const par=(holes[i]&&holes[i].par)||3;
+    parTotal+=par;
+    h+='<tr><td class="rowlabel">'+(i+1)+'</td><td class="parcol">'+par+'</td>';
     players.forEach((p,j)=>{
-      const v=scores[i][j];
-      if(v===null||v===undefined){ h+='<td>\u2013</td>'; }
-      else h+='<td class="'+(v<holes[i].par?'under':'')+'">'+v+'</td>';
+      const v=scores[i]?scores[i][j]:null;
+      if(v===null||v===undefined){ h+='<td>\u2013</td>'; return; }
+      const d=v-par;
+      h+='<td class="'+(d<0?'under':d>0?'over':'')+'">'+v+'</td>';
     });
     h+='</tr>';
   }
-  h+='<tr class="total-row"><td class="rowlabel">Total</td>';
-  players.forEach((p,j)=>{
+
+  const totals=players.map((p,j)=>{
     let t=0;
-    for(let i=0;i<numHoles;i++){ const v=scores[i][j]; if(v!==null&&v!==undefined) t+=v; }
-    h+='<td>'+t+'</td>';
+    for(let i=0;i<numHoles;i++){
+      const v=scores[i]?scores[i][j]:null;
+      if(v!==null&&v!==undefined) t+=v;
+    }
+    return t;
+  });
+
+  h+='<tr class="total-row"><td class="rowlabel">Total</td><td class="parcol">'+parTotal+'</td>';
+  totals.forEach(t=>{ h+='<td>'+t+'</td>'; });
+  h+='</tr>';
+
+  h+='<tr class="vspar-row"><td class="rowlabel">Score</td><td class="parcol">\u2013</td>';
+  totals.forEach(t=>{
+    const d=t-parTotal;
+    h+='<td class="'+(d<0?'under':d>0?'over':'')+'">'+fmtScore(d)+'</td>';
   });
   h+='</tr></tbody></table>';
+
   container.innerHTML=h;
 }
 
@@ -1474,15 +1504,16 @@ function buildCard(round){
   ctx.font='700 24px -apple-system, sans-serif';
   ctx.fillText('HOLE BY HOLE',60,y);
   y+=44;
-  const cols=round.players.length+1;
+  const cols=round.players.length+2;
   const colW=Math.min(130,(W-140)/cols);
   const sx=60;
   ctx.font='700 21px -apple-system, sans-serif';
   ctx.fillStyle='#63676d';
   ctx.fillText('Hole',sx,y);
+  ctx.fillText('Par',sx+colW,y);
   round.players.forEach((p,i)=>{
     const label=p.name.length>8?p.name.slice(0,7)+'…':p.name;
-    ctx.fillText(label,sx+colW*(i+1),y);
+    ctx.fillText(label,sx+colW*(i+2),y);
   });
   y+=16;
   ctx.strokeStyle='#e7e4de'; ctx.lineWidth=1;
@@ -1491,14 +1522,17 @@ function buildCard(round){
   const maxRows=Math.min(round.numHoles,Math.max(0,Math.floor((H-y-90)/36)));
   ctx.font='600 22px -apple-system, sans-serif';
   for(let h=0;h<maxRows;h++){
+    const par=(round.holes[h]&&round.holes[h].par)||3;
     ctx.fillStyle='#63676d';
     ctx.fillText(String(h+1),sx,y+h*36);
+    ctx.fillStyle='#9b9fa5';
+    ctx.fillText(String(par),sx+colW,y+h*36);
     round.players.forEach((p,i)=>{
       const v=round.scores[h][i];
-      if(v===null||v===undefined){ ctx.fillStyle='#9b9fa5'; ctx.fillText('–',sx+colW*(i+1),y+h*36); }
+      if(v===null||v===undefined){ ctx.fillStyle='#9b9fa5'; ctx.fillText('–',sx+colW*(i+2),y+h*36); }
       else{
-        ctx.fillStyle=v<round.holes[h].par?'#e8632c':'#1b1c1f';
-        ctx.fillText(String(v),sx+colW*(i+1),y+h*36);
+        ctx.fillStyle=v<par?'#e8632c':'#1b1c1f';
+        ctx.fillText(String(v),sx+colW*(i+2),y+h*36);
       }
     });
   }
